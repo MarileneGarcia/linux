@@ -7,6 +7,9 @@
  * Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/MAX14001-MAX14002.pdf
  */
 
+#include <asm/unaligned.h>
+#include <linux/bitfield.h>
+#include <linux/bitrev.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
@@ -37,6 +40,15 @@
 #define MAX14001_REG_CFGV				0x19
 #define MAX14001_REG_ENBLV				0x1A
 
+/* MAX14001 CONTROL values*/
+#define MAX14001_REG_WRITE				0x1
+#define MAX14001_REG_READ				0x0
+
+/* MAX14001 MASKS */
+#define MAX14001_MASK_ADDR				GENMASK(15,11)
+#define MAX14001_MASK_WR				BIT(10)
+#define MAX14001_MASK_DATA				GENMASK(9,0)
+
 /* MAX14001_REG_FLAGS MASKS */
 #define MAX14001_MASK_FLAGS_ADC			BIT(1)
 #define MAX14001_MASK_FLAGS_INRD		BIT(2)
@@ -58,24 +70,38 @@
 #define MAX14001_MASK_FLTEN_EFET		BIT(7)
 #define MAX14001_MASK_FLTEN_EMV			BIT(8)
 
-u16 max14001_reverse_uint16(u16 x) {
-	u16 y= (u16) ((((x >> 0) & 1 ) << 15) |
-				  (((x >> 1) & 1 ) << 14) |
-				  (((x >> 2) & 1 ) << 13) |
-				  (((x >> 3) & 1 ) << 12) |
-				  (((x >> 4) & 1 ) << 11) |
-				  (((x >> 5) & 1 ) << 10) |
-				  (((x >> 6) & 1 ) <<  9) |
-				  (((x >> 7) & 1 ) <<  8) |
-				  (((x >> 8) & 1 ) <<  7) |
-				  (((x >> 9) & 1 ) <<  6) |
-				  (((x >> 10) & 1) <<  5) |
-				  (((x >> 11) & 1) <<  4) |
-				  (((x >> 12) & 1) <<  3) |
-				  (((x >> 13) & 1) <<  2) |
-				  (((x >> 14) & 1) <<  1) |
-				  (((x >> 15) & 1) <<  0));
-	return y;
+/* MAX14001_REG_WEN values*/
+#define MAX14001_REG_WEN_WRITE_ENABLE	0x294
+#define MAX14001_REG_WEN_WRITE_DISABLE	0x0
+
+struct max14001_state {
+	struct spi_device *spi;
+};
+
+static int max14001_spi_write(struct max14001_state *st, 
+							u16 reg, u16 wr, u16 val)
+{
+	u16 msg = 0;
+	u16 tx = 0;
+
+	pr_err("[Log Debug] max14001_spi_write: reg: %x, wr: %x val: %x\n", reg, wr, val);
+
+	struct spi_transfer xfer = {
+		.tx_buf = NULL,
+		.len = 0,
+	};
+
+	msg |= FIELD_PREP(MAX14001_MASK_ADDR, reg);
+	msg |= FIELD_PREP(MAX14001_MASK_WR, wr);
+	msg |= FIELD_PREP(MAX14001_MASK_DATA, val);
+
+	tx = bitrev16(msg);
+	xfer.tx_buf = &tx;
+	xfer.len = sizeof(tx);
+
+	//spi_sync_transfer(st->spi, &xfer, 1);
+	pr_err("[Log Debug] max14001_spi_write: msg: %x, tx: %x\n", msg, tx);
+	return 0;
 }
 
 static int max14001_read_raw(struct iio_dev *indio_dev,
@@ -100,6 +126,8 @@ static int max14001_write_raw(struct iio_dev *indio_dev,
 				struct iio_chan_spec const *chan,
 				int val, int val2, long mask)
 {
+	struct max14001_state *st = iio_priv(indio_dev);
+
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 		pr_err("[Log Debug] max14001_write_raw: IIO_CHAN_INFO_RAW\n");
@@ -128,16 +156,23 @@ static int max14001_probe(struct spi_device *spi)
 {
 	pr_err("[Log Debug] max14001_probe\n");
 
+	struct max14001_state *st;
 	struct iio_dev *indio_dev;
-	indio_dev = devm_iio_device_alloc(&spi->dev, 0);
+
+	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (!indio_dev)
 		return -ENOMEM;
+
+	st = iio_priv(indio_dev);
+	st->spi = spi;
 
 	indio_dev->name = "max14001"; //spi_get_device_id(spi)->name;
 	indio_dev->channels = max14001_channel;
 	indio_dev->num_channels = ARRAY_SIZE(max14001_channel);
 	indio_dev->info = &max14001_info;
 
+	//Enable register write
+	max14001_spi_write(st, MAX14001_REG_WEN, MAX14001_REG_WRITE, MAX14001_REG_WEN_WRITE_ENABLE);
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
