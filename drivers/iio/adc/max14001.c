@@ -78,13 +78,37 @@ struct max14001_state {
 	struct spi_device *spi;
 };
 
-static int max14001_spi_write(struct max14001_state *st, 
-							u16 reg, u16 wr, u16 val)
+static int max14001_spi_read(struct max14001_state *st, u16 reg, u16 *val)
 {
-	u16 msg = 0;
 	u16 tx = 0;
+	u16 rx = 0;
+	u16 reversed = 0;
+	int ret = 0;
 
-	pr_err("[Log Debug] max14001_spi_write: reg: %x, wr: %x val: %x\n", reg, wr, val);
+	pr_err("[Log Debug] max14001_spi_read: reg: %x, val: %x\n", reg, *val);
+
+	tx |= FIELD_PREP(MAX14001_MASK_ADDR, reg);
+	tx |= FIELD_PREP(MAX14001_MASK_WR, MAX14001_REG_READ);
+	reversed = bitrev16(tx);
+
+	ret = spi_write_then_read(st->spi, &reversed, 2, &rx, 2); //Should I use spi_sync_transfer?
+	if (ret < 0)
+		return ret;
+
+	reversed = bitrev16(be16_to_cpu(rx)); // Do I need be16_to_cpu?
+	*val = MAX14001_MASK_ADDR&reversed;
+
+	return ret;
+}
+
+static int max14001_spi_write(struct max14001_state *st, u16 reg, u16 val)
+{
+	u16 tx =0;
+	u16 msg = 0;
+	u16 reversed = 0;
+	int ret = 0;
+
+	pr_err("[Log Debug] max14001_spi_write: reg: %x, val: %x\n", reg, val);
 
 	struct spi_transfer xfer = {
 		.tx_buf = NULL,
@@ -92,16 +116,22 @@ static int max14001_spi_write(struct max14001_state *st,
 	};
 
 	msg |= FIELD_PREP(MAX14001_MASK_ADDR, reg);
-	msg |= FIELD_PREP(MAX14001_MASK_WR, wr);
+	msg |= FIELD_PREP(MAX14001_MASK_WR, MAX14001_REG_WRITE);
 	msg |= FIELD_PREP(MAX14001_MASK_DATA, val);
 
-	tx = bitrev16(msg);
+	reversed = bitrev16(msg);
+	put_unaligned_be16(reversed, &tx); // Do I need this?
+
 	xfer.tx_buf = &tx;
 	xfer.len = sizeof(tx);
 
-	//spi_sync_transfer(st->spi, &xfer, 1);
 	pr_err("[Log Debug] max14001_spi_write: msg: %x, tx: %x\n", msg, tx);
-	return 0;
+
+	ret = spi_sync_transfer(st->spi, &xfer, 1);
+	if (ret < 0)
+		return ret;
+
+	return ret;
 }
 
 static int max14001_read_raw(struct iio_dev *indio_dev,
@@ -172,7 +202,7 @@ static int max14001_probe(struct spi_device *spi)
 	indio_dev->info = &max14001_info;
 
 	//Enable register write
-	max14001_spi_write(st, MAX14001_REG_WEN, MAX14001_REG_WRITE, MAX14001_REG_WEN_WRITE_ENABLE);
+	max14001_spi_write(st, MAX14001_REG_WEN, MAX14001_REG_WEN_WRITE_ENABLE);
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
