@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
+#include <linux/of.h>
 
 /* MAX14001 registers definition */
 #define MAX14001_REG_ADC				0x00
@@ -74,6 +75,11 @@
 #define MAX14001_REG_WEN_WRITE_ENABLE	0x294
 #define MAX14001_REG_WEN_WRITE_DISABLE	0x0
 
+enum max14001_chips {
+	max14001,
+	max14002,
+};
+
 struct max14001_state {
 	struct spi_device *spi;
 };
@@ -91,11 +97,11 @@ static int max14001_spi_read(struct max14001_state *st, u16 reg, u16 *val)
 	tx |= FIELD_PREP(MAX14001_MASK_WR, MAX14001_REG_READ);
 	reversed = bitrev16(tx);
 
-	ret = spi_write_then_read(st->spi, &reversed, 2, &rx, 2); //Should I use spi_sync_transfer?
+	ret = spi_write_then_read(st->spi, &reversed, 2, &rx, 2);
 	if (ret < 0)
 		return ret;
 
-	reversed = bitrev16(be16_to_cpu(rx)); // Do I need be16_to_cpu?
+	reversed = bitrev16(be16_to_cpu(rx));
 	*val = MAX14001_MASK_ADDR&reversed;
 
 	return ret;
@@ -120,7 +126,7 @@ static int max14001_spi_write(struct max14001_state *st, u16 reg, u16 val)
 	msg |= FIELD_PREP(MAX14001_MASK_DATA, val);
 
 	reversed = bitrev16(msg);
-	put_unaligned_be16(reversed, &tx); // Do I need this?
+	put_unaligned_be16(reversed, &tx);
 
 	xfer.tx_buf = &tx;
 	xfer.len = sizeof(tx);
@@ -172,11 +178,23 @@ static const struct iio_info max14001_info = {
 	.write_raw = max14001_write_raw,
 };
 
-static const struct iio_chan_spec max14001_channel[] = {
+static const struct iio_chan_spec max14001_channel_voltage[] = {
 	{
 		.type = IIO_VOLTAGE,
 		.indexed = 1,
 		.channel = 0,
+		.output = 0,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+					  BIT(IIO_CHAN_INFO_SCALE),
+	}
+};
+
+static const struct iio_chan_spec max14001_channel_current[] = {
+	{
+		.type = IIO_CURRENT,
+		.indexed = 1,
+		.channel = 0,
+		.output = 0,
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
 					  BIT(IIO_CHAN_INFO_SCALE),
 	}
@@ -188,6 +206,8 @@ static int max14001_probe(struct spi_device *spi)
 
 	struct max14001_state *st;
 	struct iio_dev *indio_dev;
+	bool current_channel = false;
+	int ret;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (!indio_dev)
@@ -197,20 +217,49 @@ static int max14001_probe(struct spi_device *spi)
 	st->spi = spi;
 
 	indio_dev->name = "max14001"; //spi_get_device_id(spi)->name;
-	indio_dev->channels = max14001_channel;
-	indio_dev->num_channels = ARRAY_SIZE(max14001_channel);
+	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &max14001_info;
 
+	for_each_available_child_of_node_scoped(spi->dev.of_node, child){
+		current_channel = of_property_read_bool(child, "current-channel");
+		if (current_channel)
+			break;
+	}
+
+	if(current_channel){
+		indio_dev->channels = max14001_channel_current;
+		indio_dev->num_channels = ARRAY_SIZE(max14001_channel_current);
+	} else {
+		indio_dev->channels = max14001_channel_voltage;
+		indio_dev->num_channels = ARRAY_SIZE(max14001_channel_voltage);
+	}
+	
 	//Enable register write
 	max14001_spi_write(st, MAX14001_REG_WEN, MAX14001_REG_WEN_WRITE_ENABLE);
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
+static const struct spi_device_id max14001_id_table[] = {
+	{ "max14001", max14001 },
+	{ "max14002", max14002 },
+	{}
+};
+MODULE_DEVICE_TABLE(spi, max14001_id_table);
+
+static const struct of_device_id max14001_of_match[] = {
+	{ .compatible = "adi,max14001" },
+	{ .compatible = "adi,max14002" },
+	{}
+};
+MODULE_DEVICE_TABLE(of, max14001_of_match);
+
 static struct spi_driver max14001_driver = {
 	.driver = {
 		.name = "max14001",
+		.of_match_table = max14001_of_match,
 	},
 	.probe = max14001_probe,
+	.id_table = max14001_id_table,
 };
 module_spi_driver(max14001_driver);
 

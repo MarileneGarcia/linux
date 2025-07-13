@@ -11,7 +11,17 @@
 /plugin/;
 
 / {
-	compatible = "brcm,bcm2712", "brcm,bcm2711";
+	compatible = "brcm,bcm2712";
+
+	vdd: fixedregulator@0 {
+		compatible = "regulator-fixed";
+		regulator-name = "fixed-supply";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		enable-active-high;
+		status = "okay";
+	};
 };
 
 &spi0 {
